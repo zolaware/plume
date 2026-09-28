@@ -56,7 +56,7 @@ namespace plume {
         VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
 #   elif defined(__ANDROID__)
         VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
-#   elif defined(__linux__)
+#   elif defined(__linux__) || defined(__FreeBSD__)
 #   if !defined(PLUME_SDL_VULKAN_ENABLED)
         VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
 #   endif
@@ -2135,7 +2135,7 @@ namespace plume {
             fprintf(stderr, "vkCreateAndroidSurfaceKHR failed with error code 0x%X.\n", res);
             return;
         }
-#   elif defined(__linux__)
+#   elif defined(__linux__) || defined(__FreeBSD__)
         assert(desc.renderWindow.display != 0);
         assert(desc.renderWindow.window != 0);
         VkXlibSurfaceCreateInfoKHR surfaceCreateInfo = {};
@@ -2489,7 +2489,7 @@ namespace plume {
 #   elif defined(__ANDROID__)
         dstWidth = ANativeWindow_getWidth(desc.renderWindow);
         dstHeight = ANativeWindow_getHeight(desc.renderWindow);
-#   elif defined(__linux__)
+#   elif defined(__linux__) || defined(__FreeBSD__)
         XWindowAttributes attributes;
         XGetWindowAttributes(desc.renderWindow.display, desc.renderWindow.window, &attributes);
         // The attributes width and height members do not include the border.

@@ -19,7 +19,7 @@
 #include <Windows.h>
 #elif defined(__ANDROID__)
 #include "android/native_window.h"
-#elif defined(__linux__) && !defined(PLUME_SDL_VULKAN_ENABLED)
+#elif defined(__linux__) || defined(__FreeBSD__) && !defined(PLUME_SDL_VULKAN_ENABLED)
 #include "X11/Xlib.h"
 #undef None
 #undef Status
@@ -41,7 +41,7 @@ namespace plume {
     typedef ANativeWindow* RenderWindow;
 #elif defined(PLUME_SDL_VULKAN_ENABLED)
     typedef SDL_Window *RenderWindow;
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__FreeBSD__)
     struct RenderWindow {
         Display* display;
         Window window;

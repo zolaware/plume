@@ -13,7 +13,9 @@ if(APPLE)
     enable_language(OBJC OBJCXX)
 endif()
 
-string(COMPARE EQUAL ${CMAKE_SYSTEM_NAME} "Linux" IS_LINUX)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+    set(IS_LINUX TRUE)
+endif()
 
 # Project options
 include(CMakeDependentOption)
