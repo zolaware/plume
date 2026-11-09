@@ -103,6 +103,7 @@ namespace plume {
         case RenderFormat::R16G16B16A16_SNORM:
             return DXGI_FORMAT_R16G16B16A16_SNORM;
         case RenderFormat::R16G16B16A16_SINT:
+        case RenderFormat::R16G16B16A16_SSCALED:
             return DXGI_FORMAT_R16G16B16A16_SINT;
         case RenderFormat::R32G32_TYPELESS:
             return DXGI_FORMAT_R32G32_TYPELESS;
@@ -135,6 +136,7 @@ namespace plume {
         case RenderFormat::R16G16_SNORM:
             return DXGI_FORMAT_R16G16_SNORM;
         case RenderFormat::R16G16_SINT:
+        case RenderFormat::R16G16_SSCALED:
             return DXGI_FORMAT_R16G16_SINT;
         case RenderFormat::R32_TYPELESS:
             return DXGI_FORMAT_R32_TYPELESS;

@@ -483,6 +483,7 @@ namespace plume {
             case RenderFormat::R16G16B16A16_SNORM:
                 return MTL::VertexFormatShort4Normalized;
             case RenderFormat::R16G16B16A16_SINT:
+            case RenderFormat::R16G16B16A16_SSCALED:
                 return MTL::VertexFormatShort4;
             case RenderFormat::R32G32_FLOAT:
                 return MTL::VertexFormatFloat2;
@@ -509,6 +510,7 @@ namespace plume {
             case RenderFormat::R16G16_SNORM:
                 return MTL::VertexFormatShort2Normalized;
             case RenderFormat::R16G16_SINT:
+            case RenderFormat::R16G16_SSCALED:
                 return MTL::VertexFormatShort2;
             case RenderFormat::R32_FLOAT:
                 return MTL::VertexFormatFloat;
