@@ -11,6 +11,7 @@
 #include "plume_vulkan.h"
 
 #include <algorithm>
+#include <map>
 #include <cmath>
 #include <climits>
 #include <unordered_map>
@@ -88,6 +89,7 @@ namespace plume {
         VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
         VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME,
         VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME,
+        VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
         VK_KHR_PRESENT_ID_EXTENSION_NAME,
         VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
         VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME,
@@ -261,6 +263,30 @@ namespace plume {
             return VK_FORMAT_BC7_UNORM_BLOCK;
         case RenderFormat::BC7_UNORM_SRGB:
             return VK_FORMAT_BC7_SRGB_BLOCK;
+        case RenderFormat::R16G16B16A16_USCALED:
+            return VK_FORMAT_R16G16B16A16_USCALED;
+        case RenderFormat::R8G8B8A8_USCALED:
+            return VK_FORMAT_R8G8B8A8_USCALED;
+        case RenderFormat::R8G8B8A8_SSCALED:
+            return VK_FORMAT_R8G8B8A8_SSCALED;
+        case RenderFormat::R16G16_USCALED:
+            return VK_FORMAT_R16G16_USCALED;
+        case RenderFormat::R8G8_USCALED:
+            return VK_FORMAT_R8G8_USCALED;
+        case RenderFormat::R8G8_SSCALED:
+            return VK_FORMAT_R8G8_SSCALED;
+        case RenderFormat::R16_USCALED:
+            return VK_FORMAT_R16_USCALED;
+        case RenderFormat::R16_SSCALED:
+            return VK_FORMAT_R16_SSCALED;
+        case RenderFormat::R8_USCALED:
+            return VK_FORMAT_R8_USCALED;
+        case RenderFormat::R8_SSCALED:
+            return VK_FORMAT_R8_SSCALED;
+        case RenderFormat::A2B10G10R10_UNORM_PACK32:
+            return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+        case RenderFormat::A2B10G10R10_SNORM_PACK32:
+            return VK_FORMAT_A2B10G10R10_SNORM_PACK32;
         default:
             assert(false && "Unknown format.");
             return VK_FORMAT_UNDEFINED;
@@ -1286,6 +1312,78 @@ namespace plume {
             setLayoutHandles.emplace_back(setLayout->vk);
         }
 
+        // Root descriptors: one push descriptor set per register space, placed at the set index equal
+        // to the space (after the descriptor sets; empty sets fill any gap).
+        if (desc.rootDescriptorDescsCount > 0) {
+            if (!device->pushDescriptorSupported) {
+                fprintf(stderr, "Root descriptors need VK_KHR_push_descriptor, which the device does not support.\n");
+                return;
+            }
+
+            std::map<uint32_t, std::vector<VkDescriptorSetLayoutBinding>> spaces;
+            for (uint32_t i = 0; i < desc.rootDescriptorDescsCount; i++) {
+                const RenderRootDescriptorDesc &src = desc.rootDescriptorDescs[i];
+                RootDescriptor dst;
+                dst.setIndex = src.registerSpace;
+                dst.binding = src.shaderRegister;
+                switch (src.type) {
+                case RenderRootDescriptorType::CONSTANT_BUFFER:
+                    dst.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                    break;
+                case RenderRootDescriptorType::SHADER_RESOURCE:
+                case RenderRootDescriptorType::UNORDERED_ACCESS:
+                    dst.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    break;
+                default:
+                    assert(false && "Unknown root descriptor type.");
+                    break;
+                }
+
+                rootDescriptors.emplace_back(dst);
+
+                VkDescriptorSetLayoutBinding binding = {};
+                binding.binding = dst.binding;
+                binding.descriptorType = dst.type;
+                binding.descriptorCount = 1;
+                binding.stageFlags = VK_SHADER_STAGE_ALL;
+                spaces[dst.setIndex].emplace_back(binding);
+            }
+
+            for (const auto &[space, bindings] : spaces) {
+                if (space < setLayoutHandles.size()) {
+                    fprintf(stderr, "Root descriptor register space %u is already used by a descriptor set.\n", space);
+                    return;
+                }
+
+                while (setLayoutHandles.size() < space) {
+                    VkDescriptorSetLayoutCreateInfo emptyInfo = {};
+                    emptyInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+                    VkDescriptorSetLayout empty = VK_NULL_HANDLE;
+                    if (vkCreateDescriptorSetLayout(device->vk, &emptyInfo, nullptr, &empty) != VK_SUCCESS) {
+                        fprintf(stderr, "vkCreateDescriptorSetLayout failed for an empty set.\n");
+                        return;
+                    }
+
+                    rootSetLayouts.emplace_back(empty);
+                    setLayoutHandles.emplace_back(empty);
+                }
+
+                VkDescriptorSetLayoutCreateInfo pushInfo = {};
+                pushInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+                pushInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+                pushInfo.bindingCount = uint32_t(bindings.size());
+                pushInfo.pBindings = bindings.data();
+                VkDescriptorSetLayout pushLayout = VK_NULL_HANDLE;
+                if (vkCreateDescriptorSetLayout(device->vk, &pushInfo, nullptr, &pushLayout) != VK_SUCCESS) {
+                    fprintf(stderr, "vkCreateDescriptorSetLayout failed for the root descriptors of space %u.\n", space);
+                    return;
+                }
+
+                rootSetLayouts.emplace_back(pushLayout);
+                setLayoutHandles.emplace_back(pushLayout);
+            }
+        }
+
         layoutInfo.pSetLayouts = !setLayoutHandles.empty() ? setLayoutHandles.data() : nullptr;
         layoutInfo.setLayoutCount = uint32_t(setLayoutHandles.size());
 
@@ -1303,6 +1401,10 @@ namespace plume {
 
         for (VulkanDescriptorSetLayout *setLayout : descriptorSetLayouts) {
             delete setLayout;
+        }
+
+        for (VkDescriptorSetLayout setLayout : rootSetLayouts) {
+            vkDestroyDescriptorSetLayout(device->vk, setLayout, nullptr);
         }
     }
 
@@ -1638,6 +1740,13 @@ namespace plume {
         dynamicStates.clear();
         dynamicStates.emplace_back(VK_DYNAMIC_STATE_VIEWPORT);
         dynamicStates.emplace_back(VK_DYNAMIC_STATE_SCISSOR);
+        if (desc.dynamicBlendConstantsEnabled) {
+            dynamicStates.emplace_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+        }
+
+        if (desc.dynamicStencilReferenceEnabled) {
+            dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_REFERENCE);
+        }
 
         if (desc.dynamicDepthBiasEnabled) {
             dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
@@ -2567,8 +2676,13 @@ namespace plume {
             imageViews.emplace_back(colorAttachmentImageView);
 
             if (i == 0) {
-                width = uint32_t(colorAttachment->desc.width);
-                height = colorAttachment->desc.height;
+                // A view of one mip level renders at that level's size (the base
+                // size made MoltenVK write outside the attachment: GPU page faults).
+                uint32_t mip = 0;
+                if (desc.colorAttachmentViews && desc.colorAttachmentViews[i])
+                    mip = static_cast<const VulkanTextureView *>(desc.colorAttachmentViews[i])->desc.mipSlice;
+                width = std::max(1u, uint32_t(colorAttachment->desc.width) >> mip);
+                height = std::max(1u, uint32_t(colorAttachment->desc.height) >> mip);
             }
 
             VkAttachmentReference reference = {};
@@ -2612,8 +2726,10 @@ namespace plume {
             imageViews.emplace_back(depthAttachmentImageView);
 
             if (desc.colorAttachmentsCount == 0) {
-                width = uint32_t(depthAttachment->desc.width);
-                height = depthAttachment->desc.height;
+                const uint32_t depthMip = desc.depthAttachmentView != nullptr
+                    ? static_cast<const VulkanTextureView *>(desc.depthAttachmentView)->desc.mipSlice : 0;
+                width = std::max(1u, uint32_t(depthAttachment->desc.width) >> depthMip);
+                height = std::max(1u, uint32_t(depthAttachment->desc.height) >> depthMip);
             }
 
             depthReference.attachment = uint32_t(attachments.size());
@@ -2704,7 +2820,7 @@ namespace plume {
 
     // VulkanQueryPool
 
-    VulkanQueryPool::VulkanQueryPool(VulkanDevice *device, uint32_t queryCount) {
+    VulkanQueryPool::VulkanQueryPool(VulkanDevice *device, uint32_t queryCount, bool occlusion) {
         assert(device != nullptr);
         assert(queryCount > 0);
 
@@ -2712,7 +2828,7 @@ namespace plume {
 
         VkQueryPoolCreateInfo createInfo = {};
         createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
-        createInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        createInfo.queryType = occlusion ? VK_QUERY_TYPE_OCCLUSION : VK_QUERY_TYPE_TIMESTAMP;
         createInfo.queryCount = queryCount;
         
         VkResult res = vkCreateQueryPool(device->vk, &createInfo, nullptr, &vk);
@@ -2768,6 +2884,11 @@ namespace plume {
         }
     }
 
+    bool VulkanQueryPool::getRawResults(uint32_t first, uint32_t count, uint64_t *out) {
+        VkResult res = vkGetQueryPoolResults(device->vk, vk, first, count, sizeof(uint64_t) * count, out, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+        return res == VK_SUCCESS;
+    }
+
     const uint64_t *VulkanQueryPool::getResults() const {
         return results.data();
     }
@@ -2819,6 +2940,8 @@ namespace plume {
 
     void VulkanCommandList::begin() {
         vkResetCommandBuffer(vk, 0);
+        passQueries.clear();
+        passQueriesClosed.clear();
 
         VkCommandBufferBeginInfo beginInfo = {};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -2912,6 +3035,7 @@ namespace plume {
 
     void VulkanCommandList::dispatch(uint32_t threadGroupCountX, uint32_t threadGroupCountY, uint32_t threadGroupCountZ) {
         assert(activeComputePipelineLayout != nullptr);
+        endActiveRenderPass();
 
         vkCmdDispatch(vk, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
     }
@@ -2921,6 +3045,7 @@ namespace plume {
         assert(interfaceBuffer != nullptr);
         assert((interfaceBuffer->desc.flags & RenderBufferFlag::SHADER_BINDING_TABLE) && "Buffer must allow being used as a shader binding table.");
         assert(activeRaytracingPipelineLayout != nullptr);
+        endActiveRenderPass();
 
         VkBufferDeviceAddressInfo tableAddressInfo = {};
         tableAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
@@ -3027,7 +3152,32 @@ namespace plume {
     }
 
     void VulkanCommandList::setGraphicsRootDescriptor(RenderBufferReference bufferReference, uint32_t rootDescriptorIndex) {
-        assert(false && "Root descriptors are not supported in Vulkan.");
+        pushRootDescriptor(VK_PIPELINE_BIND_POINT_GRAPHICS, activeGraphicsPipelineLayout, bufferReference, rootDescriptorIndex);
+    }
+
+    void VulkanCommandList::pushRootDescriptor(VkPipelineBindPoint bindPoint, const VulkanPipelineLayout *layout, RenderBufferReference bufferReference, uint32_t rootDescriptorIndex) {
+        assert(layout != nullptr);
+        assert(rootDescriptorIndex < layout->rootDescriptors.size());
+        assert(bufferReference.ref != nullptr);
+
+        const VulkanPipelineLayout::RootDescriptor &root = layout->rootDescriptors[rootDescriptorIndex];
+        const VulkanBuffer *buffer = static_cast<const VulkanBuffer *>(bufferReference.ref);
+        const VkPhysicalDeviceLimits &limits = layout->device->physicalDeviceProperties.limits;
+        const uint64_t maxRange = (root.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) ? limits.maxUniformBufferRange : limits.maxStorageBufferRange;
+        assert(bufferReference.offset < buffer->desc.size);
+
+        VkDescriptorBufferInfo bufferInfo = {};
+        bufferInfo.buffer = buffer->vk;
+        bufferInfo.offset = bufferReference.offset;
+        bufferInfo.range = std::min<uint64_t>(buffer->desc.size - bufferReference.offset, maxRange);
+
+        VkWriteDescriptorSet write = {};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstBinding = root.binding;
+        write.descriptorCount = 1;
+        write.descriptorType = root.type;
+        write.pBufferInfo = &bufferInfo;
+        vkCmdPushDescriptorSetKHR(vk, bindPoint, layout->vk, root.setIndex, 1, &write);
     }
 
     void VulkanCommandList::setRaytracingPipelineLayout(const RenderPipelineLayout *pipelineLayout) {
@@ -3122,7 +3272,14 @@ namespace plume {
     }
 
     void VulkanCommandList::setFramebuffer(const RenderFramebuffer *framebuffer) {
-        endActiveRenderPass();
+        // The active render pass ends when a draw or clear needs another framebuffer
+        // (checkActiveRenderPass) or a command that is not allowed in a render pass comes.
+        // Rebinding the active framebuffer, or binding one that gets no draws before
+        // switching back, no longer ends and restarts the pass (a store and reload of
+        // every attachment on tile GPUs).
+        if (framebuffer == nullptr) {
+            endActiveRenderPass();
+        }
 
         if (framebuffer != nullptr) {
             const VulkanFramebuffer *interfaceFramebuffer = static_cast<const VulkanFramebuffer *>(framebuffer);
@@ -3135,6 +3292,14 @@ namespace plume {
 
     void VulkanCommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
         vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
+    }
+
+    void VulkanCommandList::setBlendConstants(const float rgba[4]) {
+        vkCmdSetBlendConstants(vk, rgba);
+    }
+
+    void VulkanCommandList::setStencilReference(uint32_t reference) {
+        vkCmdSetStencilReference(vk, VK_STENCIL_FACE_FRONT_AND_BACK, reference);
     }
 
     static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
@@ -3348,6 +3513,7 @@ namespace plume {
         assert(dstTexture != nullptr);
         assert(srcTexture != nullptr);
         assert(resolveMode == RenderResolveMode::AVERAGE && "Vulkan only supports AVERAGE resolve mode.");
+        endActiveRenderPass();
 
         thread_local std::vector<VkImageResolve> imageResolves;
         imageResolves.clear();
@@ -3393,6 +3559,7 @@ namespace plume {
     void VulkanCommandList::buildBottomLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, const RenderBottomLevelASBuildInfo &buildInfo) {
         assert(dstAccelerationStructure != nullptr);
         assert(scratchBuffer.ref != nullptr);
+        endActiveRenderPass();
 
         const VulkanAccelerationStructure *interfaceAccelerationStructure = static_cast<const VulkanAccelerationStructure *>(dstAccelerationStructure);
         assert(interfaceAccelerationStructure->type == RenderAccelerationStructureType::BOTTOM_LEVEL);
@@ -3427,6 +3594,7 @@ namespace plume {
     void VulkanCommandList::buildTopLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, RenderBufferReference instancesBuffer, const RenderTopLevelASBuildInfo &buildInfo) {
         assert(dstAccelerationStructure != nullptr);
         assert(scratchBuffer.ref != nullptr);
+        endActiveRenderPass();
         assert(instancesBuffer.ref != nullptr);
 
         const VulkanAccelerationStructure *interfaceAccelerationStructure = static_cast<const VulkanAccelerationStructure *>(dstAccelerationStructure);
@@ -3480,6 +3648,9 @@ namespace plume {
     void VulkanCommandList::resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) {
         assert(queryPool != nullptr);
 
+        // vkCmdResetQueryPool is not allowed inside a render pass instance.
+        endActiveRenderPass();
+
         const VulkanQueryPool *interfaceQueryPool = static_cast<const VulkanQueryPool *>(queryPool);
         vkCmdResetQueryPool(vk, interfaceQueryPool->vk, queryFirstIndex, queryCount);
     }
@@ -3491,9 +3662,52 @@ namespace plume {
         vkCmdWriteTimestamp(vk, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, interfaceQueryPool->vk, queryIndex);
     }
 
+    // A query begun inside a render pass instance is kept in it (no load and store of its attachments
+    // around the query) and ends with it at the latest; one begun outside spans the passes in between.
+    void VulkanCommandList::beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const VkQueryPool pool = static_cast<const VulkanQueryPool *>(queryPool)->vk;
+        if (queriesEndRenderPass) {
+            endActiveRenderPass();
+        }
+
+        // Precise: sample counts, not just "any passed" (MoltenVK otherwise uses Metal's boolean mode).
+        vkCmdBeginQuery(vk, pool, queryIndex, queue->device->occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
+        if (activeRenderPass != VK_NULL_HANDLE) {
+            passQueries.push_back({ pool, queryIndex });
+        }
+    }
+
+    void VulkanCommandList::endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const VkQueryPool pool = static_cast<const VulkanQueryPool *>(queryPool)->vk;
+        auto matches = [&](const PassQuery &q) { return (q.pool == pool) && (q.index == queryIndex); };
+        auto closed = std::find_if(passQueriesClosed.begin(), passQueriesClosed.end(), matches);
+        if (closed != passQueriesClosed.end()) {
+            // Its render pass ended first and closed it.
+            passQueriesClosed.erase(closed);
+            return;
+        }
+
+        auto open = std::find_if(passQueries.begin(), passQueries.end(), matches);
+        if (open != passQueries.end()) {
+            passQueries.erase(open);
+        }
+        else {
+            // Begun outside a render pass: it must end outside one too.
+            endActiveRenderPass();
+        }
+
+        vkCmdEndQuery(vk, pool, queryIndex);
+    }
+
     void VulkanCommandList::checkActiveRenderPass() {
         assert(targetFramebuffer != nullptr);
-        
+
+        if ((activeRenderPass != VK_NULL_HANDLE) && (activeFramebuffer != targetFramebuffer)) {
+            endActiveRenderPass();
+        }
+
         if (activeRenderPass == VK_NULL_HANDLE) {
             VkRenderPassBeginInfo beginInfo = {};
             beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -3503,13 +3717,21 @@ namespace plume {
             beginInfo.renderArea.extent.height = targetFramebuffer->height;
             vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
             activeRenderPass = targetFramebuffer->renderPass;
+            activeFramebuffer = targetFramebuffer;
         }
     }
 
     void VulkanCommandList::endActiveRenderPass() {
         if (activeRenderPass != VK_NULL_HANDLE) {
+            for (const PassQuery &q : passQueries) {
+                vkCmdEndQuery(vk, q.pool, q.index);
+                passQueriesClosed.push_back(q);
+            }
+
+            passQueries.clear();
             vkCmdEndRenderPass(vk);
             activeRenderPass = VK_NULL_HANDLE;
+            activeFramebuffer = nullptr;
         }
     }
 
@@ -3925,6 +4147,7 @@ namespace plume {
         deviceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         deviceFeatures.pNext = featuresChain;
         vkGetPhysicalDeviceFeatures2(physicalDevice, &deviceFeatures);
+        occlusionQueryPrecise = deviceFeatures.features.occlusionQueryPrecise == VK_TRUE;
 
         // Check for properties.
         if (rayTracingFound) {
@@ -4183,6 +4406,7 @@ namespace plume {
 
         // Fill Vulkan-only capabilities.
         loadStoreOpNoneSupported = supportedOptionalExtensions.find(VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        pushDescriptorSupported = supportedOptionalExtensions.find(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME) != supportedOptionalExtensions.end();
 
         if (!nullDescriptorSupported) {
             nullBuffer = createBuffer(RenderBufferDesc::DefaultBuffer(16, RenderBufferFlag::VERTEX));
@@ -4255,6 +4479,10 @@ namespace plume {
 
     std::unique_ptr<RenderQueryPool> VulkanDevice::createQueryPool(uint32_t queryCount) {
         return std::make_unique<VulkanQueryPool>(this, queryCount);
+    }
+
+    std::unique_ptr<RenderQueryPool> VulkanDevice::createOcclusionQueryPool(uint32_t queryCount) {
+        return std::make_unique<VulkanQueryPool>(this, queryCount, true);
     }
 
     void VulkanDevice::setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) {

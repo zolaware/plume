@@ -129,9 +129,19 @@ namespace plume {
     };
 
     struct VulkanPipelineLayout : RenderPipelineLayout {
+        // A root descriptor is a binding of a push descriptor set (VK_KHR_push_descriptor):
+        // the set index is the register space, the binding the shader register.
+        struct RootDescriptor {
+            uint32_t setIndex = 0;
+            uint32_t binding = 0;
+            VkDescriptorType type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        };
+
         VkPipelineLayout vk = VK_NULL_HANDLE;
         std::vector<VkPushConstantRange> pushConstantRanges;
         std::vector<VulkanDescriptorSetLayout *> descriptorSetLayouts;
+        std::vector<RootDescriptor> rootDescriptors;
+        std::vector<VkDescriptorSetLayout> rootSetLayouts; // Push descriptor sets and empty gap fillers.
         VulkanDevice *device = nullptr;
 
         VulkanPipelineLayout(VulkanDevice *device, const RenderPipelineLayoutDesc &desc);
@@ -286,9 +296,10 @@ namespace plume {
         std::vector<uint64_t> results;
         VkQueryPool vk = VK_NULL_HANDLE;
 
-        VulkanQueryPool(VulkanDevice *device, uint32_t queryCount);
+        VulkanQueryPool(VulkanDevice *device, uint32_t queryCount, bool occlusion = false);
         virtual ~VulkanQueryPool() override;
         virtual void queryResults() override;
+        bool getRawResults(uint32_t first, uint32_t count, uint64_t *out) override;
         virtual const uint64_t *getResults() const override;
         virtual uint32_t getCount() const override;
     };
@@ -302,6 +313,19 @@ namespace plume {
         const VulkanPipelineLayout *activeGraphicsPipelineLayout = nullptr;
         const VulkanPipelineLayout *activeRaytracingPipelineLayout = nullptr;
         VkRenderPass activeRenderPass = VK_NULL_HANDLE;
+        // Occlusion queries begun inside the active render pass: they end with it at the latest (Vulkan
+        // requires a query begun in a render pass instance to end in it), and a later endQuery of one
+        // the pass end already closed does nothing.
+        struct PassQuery {
+            VkQueryPool pool = VK_NULL_HANDLE;
+            uint32_t index = 0;
+        };
+        std::vector<PassQuery> passQueries;
+        std::vector<PassQuery> passQueriesClosed;
+        // true: begin and end every query outside render passes (ends the active pass).
+        bool queriesEndRenderPass = false;
+        // The framebuffer of the active render pass instance.
+        const VulkanFramebuffer *activeFramebuffer = nullptr;
 
         VulkanCommandList(VulkanCommandQueue *queue);
         ~VulkanCommandList() override;
@@ -320,6 +344,7 @@ namespace plume {
         void setGraphicsPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) override;
         void setGraphicsDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) override;
         void setGraphicsRootDescriptor(RenderBufferReference bufferReference, uint32_t rootDescriptorIndex) override;
+        void pushRootDescriptor(VkPipelineBindPoint bindPoint, const VulkanPipelineLayout *layout, RenderBufferReference bufferReference, uint32_t rootDescriptorIndex);
         void setRaytracingPipelineLayout(const RenderPipelineLayout *pipelineLayout) override;
         void setRaytracingPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) override;
         void setRaytracingDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) override;
@@ -329,6 +354,8 @@ namespace plume {
         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
+        void setBlendConstants(const float rgba[4]) override;
+        void setStencilReference(uint32_t reference) override;
         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
@@ -342,6 +369,8 @@ namespace plume {
         void discardTexture(const RenderTexture* texture) override;
         void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
         void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
         void checkActiveRenderPass();
         void endActiveRenderPass();
         void setDescriptorSet(VkPipelineBindPoint bindPoint, const VulkanPipelineLayout *pipelineLayout, const RenderDescriptorSet *descriptorSet, uint32_t setIndex);
@@ -413,10 +442,12 @@ namespace plume {
         std::vector<VulkanQueueFamily> queueFamilies;
         RenderDeviceCapabilities capabilities;
         RenderDeviceDescription description;
+        bool occlusionQueryPrecise = false;
         VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProperties = {};
         VkPhysicalDeviceSampleLocationsPropertiesEXT sampleLocationProperties = {};
         std::unique_ptr<RenderBuffer> nullBuffer;
         bool loadStoreOpNoneSupported = false;
+        bool pushDescriptorSupported = false;
         bool nullDescriptorSupported = false;
 
         VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);
@@ -437,6 +468,7 @@ namespace plume {
         std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
         std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
         std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
+        std::unique_ptr<RenderQueryPool> createOcclusionQueryPool(uint32_t queryCount) override;
         void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) override;
         void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild, bool preferFastTrace) override;
         void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) override;
