@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
-if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
     # 10.15 because of our use of supportsFamily()
     set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS deployment target")
 endif()
@@ -60,7 +60,12 @@ set(PLUME_SOURCES
 )
 
 # Platform-specific files
-if(APPLE)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    list(APPEND PLUME_SOURCES
+        plume_apple.mm
+        plume_apple.h
+    )
+elseif(APPLE)
     list(APPEND PLUME_SOURCES
         plume_metal.cpp
         plume_metal.h
