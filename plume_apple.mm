@@ -7,6 +7,93 @@
 
 #include "plume_apple.h"
 
+#include <TargetConditionals.h>
+
+#if TARGET_OS_IOS && !TARGET_OS_MACCATALYST
+#import <UIKit/UIKit.h>
+#import <Foundation/Foundation.h>
+
+// iOS: the window handle is a UIWindow (SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER).
+// UIKit state is read on the main thread; other threads read cached values.
+namespace plume {
+    RenderDeviceVendor getRenderDeviceVendor(uint64_t) {
+        return RenderDeviceVendor::APPLE;
+    }
+
+    static void readWindow(void* handle, CocoaWindowAttributes& attributes, int& refreshRate) {
+        UIWindow* window = (__bridge UIWindow*)handle;
+        UIScreen* screen = window.windowScene.screen ?: UIScreen.mainScreen;
+#ifdef PLUME_APPLE_RETINA_ENABLED
+        const CGFloat scale = screen.nativeScale;
+#else
+        const CGFloat scale = 1.0;
+#endif
+        const CGRect bounds = window.bounds;
+        attributes.x = (int)round(bounds.origin.x);
+        attributes.y = (int)round(bounds.origin.y);
+        attributes.width = (int)round(bounds.size.width * scale);
+        attributes.height = (int)round(bounds.size.height * scale);
+        refreshRate = (int)screen.maximumFramesPerSecond;
+    }
+
+    CocoaWindow::CocoaWindow(void* window)
+        : windowHandle(window), cachedRefreshRate(60) {
+        cachedAttributes = {0, 0, 0, 0};
+        updateWindowAttributesInternal(true);
+    }
+
+    CocoaWindow::~CocoaWindow() {}
+
+    void CocoaWindow::updateWindowAttributesInternal(bool forceSync) {
+        auto updateBlock = ^{
+            CocoaWindowAttributes attributes{};
+            int rate = 60;
+            readWindow(windowHandle, attributes, rate);
+            {
+                std::lock_guard<std::mutex> lock(attributesMutex);
+                cachedAttributes = attributes;
+            }
+            cachedRefreshRate.store(rate);
+        };
+        if ([NSThread isMainThread]) {
+            updateBlock();
+        } else if (forceSync) {
+            dispatch_sync(dispatch_get_main_queue(), updateBlock);
+        } else {
+            dispatch_async(dispatch_get_main_queue(), updateBlock);
+        }
+    }
+
+    void CocoaWindow::updateRefreshRateInternal(bool forceSync) {
+        updateWindowAttributesInternal(forceSync);
+    }
+
+    void CocoaWindow::getWindowAttributes(CocoaWindowAttributes* attributes) const {
+        if ([NSThread isMainThread]) {
+            CocoaWindowAttributes fresh{};
+            int rate = 60;
+            readWindow(windowHandle, fresh, rate);
+            std::lock_guard<std::mutex> lock(attributesMutex);
+            const_cast<CocoaWindow*>(this)->cachedAttributes = fresh;
+            const_cast<CocoaWindow*>(this)->cachedRefreshRate.store(rate);
+            *attributes = fresh;
+        } else {
+            {
+                std::lock_guard<std::mutex> lock(attributesMutex);
+                *attributes = cachedAttributes;
+            }
+            const_cast<CocoaWindow*>(this)->updateWindowAttributesInternal(false);
+        }
+    }
+
+    int CocoaWindow::getRefreshRate() const {
+        const_cast<CocoaWindow*>(this)->updateWindowAttributesInternal(false);
+        return cachedRefreshRate.load();
+    }
+
+    void CocoaWindow::toggleFullscreen() {}
+}
+#else
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #import <IOKit/IOKitLib.h>
@@ -176,3 +263,5 @@ namespace plume {
         }
     }
 }
+
+#endif
